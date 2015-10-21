@@ -136,6 +136,9 @@ func TestBatcherQueueSize(t *testing.T) {
 			t.Fatalf("cannot add item %d to batch", i)
 		}
 	}
+	if b.QueueLen() != b.QueueSize {
+		t.Fatalf("Unexpected queue size %d. Expecting %d", b.QueueLen(), b.QueueSize)
+	}
 	for i := 0; i < 10; i++ {
 		if b.Push(123) {
 			t.Fatalf("expecting queue overflow")

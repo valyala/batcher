@@ -83,6 +83,14 @@ func (b *Batcher) Push(x interface{}) bool {
 	}
 }
 
+// QueueLen returns the number of pending items, which weren't passed into
+// BatcherFunc yet.
+//
+// Maximum number of pending items is Batcher.QueueSize.
+func (b *Batcher) QueueLen() int {
+	return len(b.ch)
+}
+
 func processBatches(f BatcherFunc, ch <-chan interface{}, maxBatchSize int, maxDelay time.Duration) {
 	var batch []interface{}
 	var x interface{}
