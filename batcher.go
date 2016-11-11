@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// Batcher groups items in batches and calls BatcherFunc on them.
+// Batcher groups items in batches and calls Func on them.
+//
+// See also BytesBatcher.
 type Batcher struct {
 	// Func is called by Batcher when batch is ready to be processed.
 	Func BatcherFunc
