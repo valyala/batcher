@@ -128,6 +128,14 @@ func (b *BytesBatcher) execNolock() bool {
 		b.BatchFunc(data, items)
 		b.lock.Lock()
 		b.pendingB = b.pendingB[:0]
+		if cap(b.pendingB) > 64*1024 {
+			// A hack: throw big pendingB slice to GC in order
+			// to reduce memory usage between BatchFunc calls.
+			//
+			// Keep small pendingB slices in order to reduce
+			// load on GC.
+			b.pendingB = nil
+		}
 		b.lock.Unlock()
 	}(b.pendingB, items)
 	return true
