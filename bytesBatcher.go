@@ -61,11 +61,16 @@ type BytesBatcher struct {
 	lock    sync.Mutex
 
 	// b is the batch being collected. pendingB is the batch BatchFunc is
-	// processing while it is non-empty, and the spare buffer the next batch
-	// starts in once it is emptied: the two buffers swap on every send, so a
+	// processing while pending is set, and the spare buffer the next batch
+	// starts in once it is not: the two buffers swap on every send, so a
 	// batch is never copied - under the lock or anywhere else.
 	b        []byte
 	pendingB []byte
+
+	// pending is set while a batch sent in its own goroutine is in BatchFunc.
+	// It is a flag of its own rather than len(pendingB) > 0, since an empty
+	// batch is still being processed.
+	pending bool
 
 	// overflowB holds a row moved to the next batch while the current one is
 	// sent; a buffer of its own, since the footer appended to the batch would
@@ -255,7 +260,7 @@ func (b *BytesBatcher) execNolockNocheck() {
 // The batch is swapped out, not copied: the lock is held for a constant time
 // whatever the batch's size, and no batch-sized buffer is allocated per send.
 func (b *BytesBatcher) execNolock(parallel bool) bool {
-	if len(b.pendingB) > 0 {
+	if b.pending {
 		return false
 	}
 
@@ -275,6 +280,7 @@ func (b *BytesBatcher) execNolock(parallel bool) bool {
 		return true
 	}
 
+	b.pending = true
 	b.inFlight.Add(1)
 	go func() {
 		defer b.inFlight.Done()
@@ -284,7 +290,8 @@ func (b *BytesBatcher) execNolock(parallel bool) bool {
 		// BatchFunc has returned, so the buffer is free to collect the
 		// batch after next
 		b.lock.Lock()
-		b.pendingB = b.pendingB[:0]
+		b.pendingB = data[:0]
+		b.pending = false
 		b.lock.Unlock()
 	}()
 

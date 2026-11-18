@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -415,7 +416,7 @@ func TestBytesBatcherSwapsBuffersInsteadOfCopying(t *testing.T) {
 		}
 		<-done
 		// let the batch's goroutine give its buffer back before the next one
-		waitFor(t, func() bool { bb.lock.Lock(); defer bb.lock.Unlock(); return len(bb.pendingB) == 0 })
+		waitFor(t, func() bool { bb.lock.Lock(); defer bb.lock.Unlock(); return !bb.pending })
 	}
 
 	mu.Lock()
@@ -557,6 +558,75 @@ func TestBytesBatcherFlushDoesNotBlockPushes(t *testing.T) {
 	case <-pushed:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Push blocked behind Flush waiting for a pending batch")
+	}
+}
+
+// TestBytesBatcherParallelSendDoesNotShareBuffer checks that a batch handed to
+// BatchFunc in its own goroutine is not written to by later Push calls while
+// BatchFunc is still reading it.
+//
+// An empty batch (rows that append nothing) has no bytes, but its BatchFunc is
+// running all the same: the next batch must not be sent until it returns.
+// Otherwise two goroutines are in flight with one pendingB between them, the
+// empty one's goroutine finishes and marks the other's buffer free, and Push
+// writes into it while its BatchFunc is still reading.
+func TestBytesBatcherParallelSendDoesNotShareBuffer(t *testing.T) {
+	var (
+		calls    atomic.Int32
+		started1 = make(chan struct{})
+		release1 = make(chan struct{})
+		got2     = make(chan string, 1)
+		early    = make(chan struct{}, 1)
+	)
+	bb := &BytesBatcher{
+		BatchFunc: func(b []byte, items int) {
+			switch calls.Add(1) {
+			case 1:
+				close(started1)
+				<-release1
+			case 2:
+				// a second call before the first returned
+				select {
+				case <-release1:
+				default:
+					early <- struct{}{}
+				}
+				got2 <- string(b)
+			}
+		},
+		MaxBatchSize: 1,
+		MaxDelay:     time.Hour,
+	}
+	defer bb.Stop()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(release1) }) }
+	defer release() // runs before Stop, so a failed check does not hang it
+
+	push := func(s string) bool {
+		return bb.Push(func(b []byte, _ int) []byte { return append(b, s...) })
+	}
+
+	if !push("") { // empty batch: its BatchFunc blocks
+		t.Fatal("push of the empty batch refused")
+	}
+	<-started1
+
+	// the empty batch is still in BatchFunc, so "abc" must wait for it
+	push("abc")
+	select {
+	case <-early:
+		t.Fatal("BatchFunc called while the previous batch was still in it")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release()
+	waitFor(t, func() bool { bb.lock.Lock(); defer bb.lock.Unlock(); return !bb.pending })
+
+	if !bb.Flush() {
+		t.Fatal("flush failed")
+	}
+	if got := <-got2; got != "abc" {
+		t.Fatalf("BatchFunc saw %q; want %q", got, "abc")
 	}
 }
 
